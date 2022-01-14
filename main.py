@@ -17,8 +17,13 @@ from utils import progress_bar
 
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
 parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
+parser.add_argument('--opt', default="adam")
+parser.add_argument('--net', default='ViT')
+parser.add_argument('--cos', action='store_false', 
+					help='Train with cosine annealing scheduling')
 parser.add_argument('--resume', '-r', action='store_true',
                     help='resume from checkpoint')
+
 args = parser.parse_args()
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -31,12 +36,21 @@ transform_train = transforms.Compose([
     transforms.RandomCrop(32, padding=4),
     transforms.RandomHorizontalFlip(),
     transforms.ToTensor(),
-    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    # issue #129, 135 - std dev too low
+    # transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2434, 0.2616)),
+    # issue #130 -  more data augmentation techniques
+    transforms.ColorJitter(brightness=.5, hue=.3),
+    transforms.RandomInvert(),
+    transforms.RandomAffine(degrees=(30, 70), translate=(0.1, 0.3), scale=(0.75, 0.75)),
+    transforms.RandomErasing(),
 ])
 
 transform_test = transforms.Compose([
     transforms.ToTensor(),
-    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    # issue #129, 135
+    # transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2434, 0.2616)),
 ])
 
 trainset = torchvision.datasets.CIFAR10(
@@ -54,21 +68,27 @@ classes = ('plane', 'car', 'bird', 'cat', 'deer',
 
 # Model
 print('==> Building model..')
-# net = VGG('VGG19')
-# net = ResNet18()
-# net = PreActResNet18()
-# net = GoogLeNet()
-# net = DenseNet121()
-# net = ResNeXt29_2x64d()
-# net = MobileNet()
-# net = MobileNetV2()
-# net = DPN92()
-# net = ShuffleNetG2()
-# net = SENet18()
-# net = ShuffleNetV2(1)
-# net = EfficientNetB0()
-# net = RegNetX_200MF()
-net = SimpleDLA()
+
+networks = {"VGG": VGG('VGG19'),
+	"ResNet18": ResNet18(),
+	"PreActResNet18": PreActResNet18(),
+	"GoogLeNet": GoogLeNet(),
+	"DenseNet121": DenseNet121(),
+	"ResNeXt29_2x64d": ResNeXt29_2x64d(),
+	"MobileNet": MobileNet(),
+	"MobileNetV2": MobileNetV2(),
+	"DPN92": DPN92(),
+	"ShuffleNetG2": ShuffleNetG2(),
+	"SENet18": SENet18(),
+	"ShuffleNetV2": ShuffleNetV2(1)
+	"EfficientNetB0": EfficientNetB0(),
+	"RegNetX_200MF": RegNetX_200MF(),
+	"SimpleDLA": SimpleDLA(),
+	"ViT": ViT()
+}
+
+net = networks[args.net]
+
 net = net.to(device)
 if device == 'cuda':
     net = torch.nn.DataParallel(net)
@@ -83,11 +103,18 @@ if args.resume:
     best_acc = checkpoint['acc']
     start_epoch = checkpoint['epoch']
 
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.SGD(net.parameters(), lr=args.lr,
-                      momentum=0.9, weight_decay=5e-4)
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
+optimizers = {
+	"sgd": optim.SGD(net.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4),
+	"adam": optimizer = optim.Adam(net.parameters(), lr=args.lr)
+}
 
+criterion = nn.CrossEntropyLoss()
+optimizer = optimizers[args.opt]
+# use cosine or reduce LR on Plateau scheduling
+if args.cos:
+	scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
+else:
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=3, verbose=True, min_lr=1e-3*1e-5, factor=0.1) 
 
 # Training
 def train(epoch):
